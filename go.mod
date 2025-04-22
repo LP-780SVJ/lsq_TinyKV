@@ -4,6 +4,7 @@ require (
 	github.com/BurntSushi/toml v0.3.1
 	github.com/Connor1996/badger v1.5.1-0.20220222053432-2d2cbf472c77
 	github.com/coreos/pkg v0.0.0-20180928190104-399ea9e2e55f
+	github.com/dgraph-io/badger/v3 v3.2103.5
 	github.com/docker/go-units v0.4.0
 	github.com/gogo/protobuf v1.3.2
 	github.com/golang/protobuf v1.3.4
@@ -20,7 +21,7 @@ require (
 	github.com/pingcap/log v0.0.0-20200117041106-d28c14d3b1cd
 	github.com/pingcap/tidb v1.1.0-beta.0.20200309111804-d8264d47f760
 	github.com/pingcap/tipb v0.0.0-20200212061130-c4d518eb1d60
-	github.com/pkg/errors v0.8.1
+	github.com/pkg/errors v0.9.1
 	github.com/remyoudompheng/bigfft v0.0.0-20200410134404-eec4a21b6bb0 // indirect
 	github.com/shirou/gopsutil/v3 v3.22.7
 	github.com/sirupsen/logrus v1.2.0

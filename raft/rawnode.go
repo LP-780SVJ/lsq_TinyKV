@@ -64,18 +64,57 @@ type Ready struct {
 	// If it contains a MessageType_MsgSnapshot message, the application MUST report back to raft
 	// when the snapshot has been received or has failed by calling ReportSnapshot.
 	Messages []pb.Message
+	/*
+	   // 易失性状态（无需持久化）
+	   *SoftState
+
+	   // 持久化状态（需要保存到稳定存储）
+	   pb.HardState
+
+	   // 需要保存到稳定存储的日志条目
+	   Entries []pb.Entry
+
+	   // 需要保存到稳定存储的快照
+	   Snapshot pb.Snapshot
+
+	   // 已提交的日志条目（需要应用到状态机）
+	   CommittedEntries []pb.Entry
+
+	   // 待发送的消息（在日志条目保存到稳定存储后发送）
+	   Messages []pb.Message
+	*/
 }
 
 // RawNode is a wrapper of Raft.
 type RawNode struct {
-	Raft *Raft
+	Raft         *Raft
+	prehardstate pb.HardState
+	presoftstate *SoftState
 	// Your Data Here (2A).
 }
 
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
 func NewRawNode(config *Config) (*RawNode, error) {
 	// Your Code Here (2A).
-	return nil, nil
+	if err := config.validate(); err != nil {
+		panic(err.Error())
+	}
+	raft := newRaft(config)
+	preHardstate := pb.HardState{
+		Term:   raft.Term,
+		Vote:   raft.Vote,
+		Commit: raft.RaftLog.committed,
+	}
+	preSoftstate := &SoftState{
+		Lead:      raft.Lead,
+		RaftState: raft.State,
+	}
+	rn := &RawNode{
+		Raft:         raft,
+		prehardstate: preHardstate,
+		presoftstate: preSoftstate,
+	}
+	return rn, nil
 }
 
 // Tick advances the internal logical clock by a single tick.
@@ -143,19 +182,90 @@ func (rn *RawNode) Step(m pb.Message) error {
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
-	return Ready{}
+	readySoftstate := &SoftState{}
+	if rn.Raft.Lead != rn.presoftstate.Lead || rn.Raft.State != rn.presoftstate.RaftState {
+		// 如果当前节点的状态发生了变化，则更新 SoftState
+		readySoftstate = &SoftState{
+			Lead:      rn.Raft.Lead,
+			RaftState: rn.Raft.State,
+		}
+	} else {
+		readySoftstate = nil
+	}
+
+	readyHardstate := pb.HardState{}
+	if rn.IsHardStateUpdated() {
+		// 如果当前节点的状态发生了变化，则更新 HardState
+		readyHardstate = pb.HardState{
+			Term:   rn.Raft.Term,
+			Vote:   rn.Raft.Vote,
+			Commit: rn.Raft.RaftLog.committed,
+		}
+	}
+	readyEntries := rn.Raft.RaftLog.unstableEntries()
+
+	readySnapshot := pb.Snapshot{} //如果pendingSnapshot不为空，则将其赋值给Ready.Snapshot；否则Ready.Snapshot为空的pb.Snapshot
+	if rn.Raft.RaftLog.pendingSnapshot != nil {
+		readySnapshot = *rn.Raft.RaftLog.pendingSnapshot
+	}
+	readyCommittedEntries := rn.Raft.RaftLog.nextEnts()
+	readyMessages := rn.Raft.msgs
+	return Ready{
+		SoftState:        readySoftstate,
+		HardState:        readyHardstate,
+		Entries:          readyEntries,
+		Snapshot:         readySnapshot,
+		CommittedEntries: readyCommittedEntries,
+		Messages:         readyMessages,
+	}
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
-	return false
+	res := false
+	if len(rn.Raft.msgs) > 0 ||
+		len(rn.Raft.RaftLog.unstableEntries()) > 0 ||
+		len(rn.Raft.RaftLog.nextEnts()) > 0 ||
+		rn.IsHardStateUpdated() ||
+		!IsEmptySnap(rn.Raft.RaftLog.pendingSnapshot) {
+		res = true
+	}
+	return res
 }
 
 // Advance notifies the RawNode that the application has applied and saved progress in the
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
-	// Your Code Here (2A).
+	// 清空已发送的消息队列
+	rn.Raft.msgs = nil
+
+	// 更新已提交但未应用的日志条目
+	if len(rd.CommittedEntries) > 0 {
+		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
+		rd.CommittedEntries = nil
+	}
+
+	// 更新不稳定日志条目
+	if len(rd.Entries) > 0 {
+		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
+		rd.Entries = nil
+	}
+
+	// 处理快照
+	if !IsEmptySnap(&rd.Snapshot) {
+		rn.Raft.RaftLog.pendingSnapshot = nil
+	}
+
+	// 更新 HardState
+	if !IsEmptyHardState(rd.HardState) {
+		rn.prehardstate = rd.HardState
+	}
+
+	// 更新 SoftState
+	if rd.SoftState != nil {
+		rn.presoftstate = rd.SoftState
+	}
 }
 
 // GetProgress return the Progress of this node and its peers, if this
@@ -173,4 +283,14 @@ func (rn *RawNode) GetProgress() map[uint64]Progress {
 // TransferLeader tries to transfer leadership to the given transferee.
 func (rn *RawNode) TransferLeader(transferee uint64) {
 	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: transferee})
+}
+
+// 判断hardstate是否更新
+func (rn *RawNode) IsHardStateUpdated() bool {
+	if rn.prehardstate.Term != rn.Raft.Term ||
+		rn.prehardstate.Vote != rn.Raft.Vote ||
+		rn.prehardstate.Commit != rn.Raft.RaftLog.committed {
+		return true
+	}
+	return false
 }
