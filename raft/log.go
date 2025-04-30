@@ -81,7 +81,7 @@ func newLog(storage Storage) *RaftLog {
 	rl := &RaftLog{
 		storage:         storage,
 		committed:       hardstate.Commit,
-		applied:         firstIndex - 1, //为什么要-1？？？
+		applied:         firstIndex - 1, //applied为快照最后一个，初始化时就是firstindex-1
 		stabled:         lastIndex,
 		entries:         entries,
 		pendingSnapshot: nil,
@@ -109,7 +109,11 @@ func (l *RaftLog) allEntries() []pb.Entry {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return l.entries[l.stabled:] //是否需要+1？？？
+	//return l.entries[l.stabled:]
+	//是否需要+1？？？需要+1，但为什么我+1过后通过不了？
+	//因为测试里l.dummyIndex是1，所以l.stabled-l.dummyIndex+1=l.stabled-1+1=l.stabled
+	//属于歪打正着了
+	return l.entries[l.stabled-l.dummyIndex+1:]
 }
 
 // 返回指定索引区间对应的entry

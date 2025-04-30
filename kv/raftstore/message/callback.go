@@ -7,10 +7,17 @@ import (
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 )
 
+/*
+Callback在TinyKV中的作用：
+1.提供异步通知机制
+2.存储命令执行结果
+3.支持快照操作
+4.解耦命令执行和结果处理
+*/
 type Callback struct {
-	Resp *raft_cmdpb.RaftCmdResponse
-	Txn  *badger.Txn // used for GetSnap
-	done chan struct{}
+	Resp *raft_cmdpb.RaftCmdResponse //存储Raft命令的相应结果
+	Txn  *badger.Txn                 // used for GetSnap，存储一个Badger数据库的事务对象
+	done chan struct{}               //一个无缓冲的通道，用于通知回调完成
 }
 
 func (cb *Callback) Done(resp *raft_cmdpb.RaftCmdResponse) {

@@ -7,10 +7,10 @@ import (
 )
 
 type WriteBatch struct {
-	entries       []*badger.Entry
-	size          int
-	safePoint     int
-	safePointSize int
+	entries       []*badger.Entry //存储需要写入或者删除的键值对
+	size          int             //记录当前批次中所有键值对的总大小，用于限制批次大小或统计写入量
+	safePoint     int             //表示当前安全点的entries列表索引，用于支持回滚操作
+	safePointSize int             //表示安全点时的size值，用于在回滚时恢复批次大小
 	safePointUndo int
 }
 
@@ -26,6 +26,9 @@ func (wb *WriteBatch) Len() int {
 	return len(wb.entries)
 }
 
+// 在指定的列族CF中设置一个键值对
+// 将键值对封装为badger.Entry对象，并添加到entries列表中
+// 同时更新size属性，表示当前批次中所有键值对的总大小
 func (wb *WriteBatch) SetCF(cf string, key, val []byte) {
 	wb.entries = append(wb.entries, &badger.Entry{
 		Key:   KeyWithCF(cf, key),
@@ -34,6 +37,8 @@ func (wb *WriteBatch) SetCF(cf string, key, val []byte) {
 	wb.size += len(key) + len(val)
 }
 
+// 删除指定的元数据键
+// 将键封装为badger.Entry对象（值为空），并添加到entries列表中
 func (wb *WriteBatch) DeleteMeta(key []byte) {
 	wb.entries = append(wb.entries, &badger.Entry{
 		Key: key,
@@ -41,6 +46,7 @@ func (wb *WriteBatch) DeleteMeta(key []byte) {
 	wb.size += len(key)
 }
 
+// 删除指定列族CF中的键
 func (wb *WriteBatch) DeleteCF(cf string, key []byte) {
 	wb.entries = append(wb.entries, &badger.Entry{
 		Key: KeyWithCF(cf, key),
@@ -48,6 +54,8 @@ func (wb *WriteBatch) DeleteCF(cf string, key []byte) {
 	wb.size += len(key)
 }
 
+// 设置一个元数据键值对，其中值是一个Protobuf消息
+// 将消息序列化为字节数组后，封装为badger.Entry并添加到entries中，同时更新size
 func (wb *WriteBatch) SetMeta(key []byte, msg proto.Message) error {
 	val, err := proto.Marshal(msg)
 	if err != nil {

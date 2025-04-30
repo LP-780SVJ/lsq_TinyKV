@@ -75,6 +75,8 @@ func NewPeerStorage(engines *engine_util.Engines, region *metapb.Region, regionS
 	}, nil
 }
 
+// 返回初始的HardState和ConfState
+// 如果raftState的HardState为空，说明该peer还没有初始化
 func (ps *PeerStorage) InitialState() (eraftpb.HardState, eraftpb.ConfState, error) {
 	raftState := ps.raftState
 	if raft.IsEmptyHardState(*raftState.HardState) {
@@ -86,6 +88,8 @@ func (ps *PeerStorage) InitialState() (eraftpb.HardState, eraftpb.ConfState, err
 	return *raftState.HardState, util.ConfStateFromRegion(ps.region), nil
 }
 
+// 返回指定范围内的日志条目
+// 检查范围是否合法，并从存储中加载日志条目
 func (ps *PeerStorage) Entries(low, high uint64) ([]eraftpb.Entry, error) {
 	if err := ps.checkRange(low, high); err != nil || low == high {
 		return nil, err
@@ -126,6 +130,7 @@ func (ps *PeerStorage) Entries(low, high uint64) ([]eraftpb.Entry, error) {
 	return nil, raft.ErrUnavailable
 }
 
+// 返回指定索引的日志条目的任期
 func (ps *PeerStorage) Term(idx uint64) (uint64, error) {
 	if idx == ps.truncatedIndex() {
 		return ps.truncatedTerm(), nil
@@ -143,14 +148,19 @@ func (ps *PeerStorage) Term(idx uint64) (uint64, error) {
 	return entry.Term, nil
 }
 
+// 提供日志的边界信息
 func (ps *PeerStorage) LastIndex() (uint64, error) {
 	return ps.raftState.LastIndex, nil
 }
 
+// 提供日志的边界信息
 func (ps *PeerStorage) FirstIndex() (uint64, error) {
 	return ps.truncatedIndex() + 1, nil
 }
 
+// 返回当前的快照
+// 如果快照正在生成，等待生成完成
+// 如果尝试次数超过限制，返回错误
 func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
 	var snapshot eraftpb.Snapshot
 	if ps.snapState.StateType == snap.SnapState_Generating {
@@ -206,6 +216,7 @@ func (ps *PeerStorage) SetRegion(region *metapb.Region) {
 	ps.region = region
 }
 
+// 检查日志索引范围是否合法
 func (ps *PeerStorage) checkRange(low, high uint64) error {
 	if low > high {
 		return errors.Errorf("low %d is greater than high %d", low, high)
@@ -218,10 +229,12 @@ func (ps *PeerStorage) checkRange(low, high uint64) error {
 	return nil
 }
 
+// 截断日志的索引
 func (ps *PeerStorage) truncatedIndex() uint64 {
 	return ps.applyState.TruncatedState.Index
 }
 
+// 截断日志的任期
 func (ps *PeerStorage) truncatedTerm() uint64 {
 	return ps.applyState.TruncatedState.Term
 }
@@ -230,6 +243,8 @@ func (ps *PeerStorage) AppliedIndex() uint64 {
 	return ps.applyState.AppliedIndex
 }
 
+// 验证快照是否有效
+// 检查快照的索引和Region信息是否过时
 func (ps *PeerStorage) validateSnap(snap *eraftpb.Snapshot) bool {
 	idx := snap.GetMetadata().GetIndex()
 	if idx < ps.truncatedIndex() {
@@ -308,6 +323,31 @@ func ClearMeta(engines *engine_util.Engines, kvWB, raftWB *engine_util.WriteBatc
 // never be committed
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
 	// Your Code Here (2B).
+	if len(entries) == 0 {
+		return nil
+	}
+
+	// 检查是否出现冲突
+	entryIndex := entries[0].Index
+	entryTerm := entries[0].Term
+	if entryTerm != ps.raftState.LastTerm && entryIndex <= ps.raftState.LastIndex {
+		// 发生冲突，删除冲突的以及之后的日志
+		for i := entryIndex; i <= ps.raftState.LastIndex; i++ {
+			raftWB.DeleteMeta(meta.RaftLogKey(ps.region.Id, i))
+		}
+		ps.raftState.LastIndex = entryIndex - 1
+	}
+	// 将新的日志条目追加到raft log中
+	for _, entry := range entries {
+		key := meta.RaftLogKey(ps.region.Id, entry.Index)
+		raftWB.SetMeta(key, &entry)
+	}
+
+	// 更新 raftState
+	lastEntry := entries[len(entries)-1]
+	ps.raftState.LastIndex = lastEntry.Index
+	ps.raftState.LastTerm = lastEntry.Term
+
 	return nil
 }
 
@@ -331,6 +371,49 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
+
+	//创建批量写入工具类的实例
+	kvWB := new(engine_util.WriteBatch)
+	raftWB := new(engine_util.WriteBatch)
+
+	//判断是否有Snapshot需要应用
+	if !raft.IsEmptySnap(&ready.Snapshot) {
+
+		// 调用 ApplySnapshot 方法
+		_, err := ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
+		if err != nil {
+			return nil, err
+		}
+
+		// 将 WriteBatch 写入到对应的数据库
+		if err := kvWB.WriteToDB(ps.Engines.Kv); err != nil {
+			return nil, err
+		}
+		if err := raftWB.WriteToDB(ps.Engines.Raft); err != nil {
+			return nil, err
+		}
+	}
+
+	//判断是否有日志需要追加
+	if len(ready.Entries) > 0 {
+		// 调用 Append 方法
+		if err := ps.Append(ready.Entries, raftWB); err != nil {
+			return nil, err
+		}
+		// 将 WriteBatch 写入到对应的数据库
+		if err := raftWB.WriteToDB(ps.Engines.Raft); err != nil {
+			return nil, err
+		}
+	}
+
+	if !raft.IsEmptyHardState(ready.HardState) {
+		ps.raftState.HardState = &ready.HardState
+		//将硬状态写入到RaftDB
+		if err := raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState); err != nil {
+			return nil, err
+		}
+	}
+
 	return nil, nil
 }
 

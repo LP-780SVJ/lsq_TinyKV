@@ -179,6 +179,10 @@ func (rn *RawNode) Step(m pb.Message) error {
 	return ErrStepPeerNotFound
 }
 
+/*
+上层调用顺序：HasReady（）-> Ready() -> Advance()
+*/
+
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).

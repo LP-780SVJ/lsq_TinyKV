@@ -43,6 +43,11 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		return
 	}
 	// Your Code Here (2B).
+	if d.RaftGroup.HasReady() {
+		ready := d.RaftGroup.Ready()
+		d.peerStorage.SaveReadyState(&ready)
+		d.RaftGroup.Advance(ready)
+	}
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
@@ -71,6 +76,7 @@ func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
 	}
 }
 
+// 主要作用是对即将提交到 Raft 的命令（RaftCmdRequest）进行一系列的预检查，确保命令的合法性和正确性。如果检查失败，则返回相应的错误，阻止非法命令的提交。
 func (d *peerMsgHandler) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) error {
 	// Check store_id, make sure that the msg is dispatched to the right place.
 	if err := util.CheckStoreID(req, d.storeID()); err != nil {
@@ -114,6 +120,27 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
+	//判断是否是Admin请求
+	if msg.AdminRequest != nil {
+		switch msg.AdminRequest.CmdType {
+		case raft_cmdpb.AdminCmdType_CompactLog:
+		case raft_cmdpb.AdminCmdType_Split:
+		}
+	} else if len(msg.Requests) > 0 {
+		for _, req := range msg.Requests {
+			switch req.CmdType {
+			case raft_cmdpb.CmdType_Get:
+			case raft_cmdpb.CmdType_Put:
+			case raft_cmdpb.CmdType_Delete:
+			case raft_cmdpb.CmdType_Snap:
+			}
+		}
+	}
+
+	//调用回调函数，通知提交成功
+	// cb.Done(&raft_cmdpb.RaftCmdResponse{
+	// 	Header: &raft_cmdpb.RaftResponseHeader{},
+	// })
 }
 
 func (d *peerMsgHandler) onTick() {
@@ -223,9 +250,9 @@ func (d *peerMsgHandler) validateRaftMessage(msg *rspb.RaftMessage) bool {
 	return true
 }
 
-/// Checks if the message is sent to the correct peer.
-///
-/// Returns true means that the message can be dropped silently.
+// / Checks if the message is sent to the correct peer.
+// /
+// / Returns true means that the message can be dropped silently.
 func (d *peerMsgHandler) checkMessage(msg *rspb.RaftMessage) bool {
 	fromEpoch := msg.GetRegionEpoch()
 	isVoteMsg := util.IsVoteMessage(msg.Message)

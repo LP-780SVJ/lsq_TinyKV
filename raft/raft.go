@@ -441,11 +441,11 @@ func (r *Raft) becomeCandidate() {
 	r.Term++      //增加当前任期
 	r.Vote = r.id //投票给自己
 	r.State = StateCandidate
-	r.votes = make(map[uint64]bool) //变为候选人
-	r.votes[r.id] = true            //投票给自己
-	r.electionElapsed = 0           //重置选举计时器
-	r.leadTransferee = None         //没有转移leader
-	r.randomizedElectionTimeout()   //随机化选举间隔
+	r.votes = make(map[uint64]bool)
+	r.votes[r.id] = true          //投票给自己
+	r.electionElapsed = 0         //重置选举计时器
+	r.leadTransferee = None       //没有转移leader
+	r.randomizedElectionTimeout() //随机化选举间隔
 }
 
 // becomeLeader transform this peer's state to leader
@@ -480,12 +480,9 @@ func (r *Raft) handleHeartbeatResponse(m pb.Message) {
 		r.becomeFollower(m.Term, m.From)
 		return
 	}
-	//如果返回的消息的commit与leader的不一致，需要发送append消息来同步commit索引
-	// if m.Commit != r.RaftLog.committed {
-	// 	r.sendAppend(m.From)
-	// 	return
-	// }
-	if m.Commit < r.RaftLog.LastIndex() {
+
+	//回复的commit小于当前节点的commit，说明当前节点的commit需要更新
+	if m.Commit < r.RaftLog.committed {
 		r.sendAppend(m.From)
 		return
 	}
@@ -498,7 +495,7 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 	}
 
 	if m.Reject {
-		// 如果跟随者拒绝，回退 Next 索引
+		// 如果跟随者拒绝，回退索引
 		prevLogIndex := m.Index
 		prevLogTerm, _ := r.RaftLog.Term(prevLogIndex)
 		entries := r.RaftLog.getEntries(m.Index+1, r.Prs[r.id].Next)
@@ -720,7 +717,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 			From:    r.id,
 			To:      m.From,
 			Reject:  true,
-			Index:   r.RaftLog.committed, //回退到到committed
+			Index:   r.RaftLog.committed, //回退到committed
 		})
 		return
 	}
