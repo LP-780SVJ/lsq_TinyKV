@@ -193,9 +193,11 @@ func (c *Cluster) Request(key []byte, reqs []*raft_cmdpb.Request, timeout time.D
 		if resp == nil {
 			// it should be timeouted innerly
 			SleepMS(100)
+			log.DIYf(log.LOG_DIY1, "resp", "resp is nil")
 			continue
 		}
 		if resp.Header.Error != nil {
+			log.DIYf(log.LOG_DIY1, "resp", "resp.Header.Error is not nil")
 			SleepMS(100)
 			continue
 		}
@@ -308,6 +310,8 @@ func (c *Cluster) MustPutCF(cf string, key, value []byte) {
 		panic(resp.Header.Error)
 	}
 	if len(resp.Responses) != 1 {
+		// log.DIYf(log.LOG_DIY1, "resp", "current len(resp.Responses) %d", len(resp.Responses))
+		// log.DIYf(log.LOG_DIY1, "resp", "current resp %s", resp.String())
 		panic("len(resp.Responses) != 1")
 	}
 	if resp.Responses[0].CmdType != raft_cmdpb.CmdType_Put {

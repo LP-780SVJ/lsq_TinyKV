@@ -19,6 +19,7 @@ import (
 	"math/rand"
 	"sort"
 
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -175,10 +176,21 @@ func newRaft(c *Config) *Raft {
 		id:  c.ID,
 		Prs: make(map[uint64]*Progress),
 	}
-	for _, peer := range c.peers {
-		r.Prs[peer] = &Progress{
-			Match: 0,
-			Next:  1,
+	if c.peers != nil { //2A
+		for _, id := range c.peers {
+			r.Prs[id] = &Progress{
+				Match: 0,
+				Next:  1,
+			}
+		}
+	} else {
+		//2B,当c.peers为nil时，需要从ConfState中读取节点信息来初始化
+		_, peers, _ := c.Storage.InitialState()
+		for _, id := range peers.Nodes { //Nodes是一个uint64的切片
+			r.Prs[id] = &Progress{
+				Match: 0,
+				Next:  1,
+			}
 		}
 	}
 	r.RaftLog = newLog(c.Storage)
@@ -216,6 +228,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 	for i := range entries {
 		entryPtrs = append(entryPtrs, &entries[i])
 	}
+	//log.DIYf(log.LOG_DIY1, "raft entry", "sendappend , logterm : %d", prevLogTerm)
 
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgAppend,
@@ -258,6 +271,10 @@ func (r *Raft) sendRequestVote(to uint64) {
 		LogTerm: logterm,
 		Index:   r.RaftLog.LastIndex(),
 	})
+
+	// log.DIYf(log.LOG_DIY1, "msgs", "PRINT MSG BEGIN!!!")
+	// printMessages(r.msgs)
+	// log.DIYf(log.LOG_DIY1, "msgs", "PRINT MSG END!!!")
 }
 
 /*-------------------------------------SEND 函数 END------------------------------------*/
@@ -314,6 +331,7 @@ func (r *Raft) Step(m pb.Message) error {
 			for id := range r.Prs {
 				if id != r.id {
 					r.sendRequestVote(id)
+					// log.DIYf(log.LOG_DIY1, "vote", "id:%d send requestVote to id:%d", r.id, id)
 				}
 			}
 		case pb.MessageType_MsgBeat:
@@ -322,10 +340,12 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handleAppendEntries(m)
 		case pb.MessageType_MsgAppendResponse:
 		case pb.MessageType_MsgRequestVote:
+			// log.DIYf(log.LOG_DIY1, "vote", "id:%d get requestVote from %d", r.id, m.From)
 			r.handleRequestVote(m)
 		case pb.MessageType_MsgRequestVoteResponse:
 		case pb.MessageType_MsgSnapshot:
 		case pb.MessageType_MsgHeartbeat:
+			// log.DIYf(log.LOG_DIY1, "heartbeat", "id:%d get heartbeat from %d", r.id, m.From)
 			r.handleHeartbeat(m)
 		case pb.MessageType_MsgHeartbeatResponse:
 		case pb.MessageType_MsgTransferLeader:
@@ -335,6 +355,8 @@ func (r *Raft) Step(m pb.Message) error {
 		switch m.MsgType {
 		case pb.MessageType_MsgHup:
 			r.becomeCandidate()
+			// log.DIYf(log.LOG_DIY1, "vote", "id:%d become candidate at term:%d, Prs[] length is %d", r.id, r.Term, len(r.Prs))
+
 			if len(r.Prs) == 1 {
 				// Single-node cluster, become leader immediately
 				r.becomeLeader()
@@ -342,7 +364,9 @@ func (r *Raft) Step(m pb.Message) error {
 			}
 			for id := range r.Prs {
 				if id != r.id {
+
 					r.sendRequestVote(id)
+					// log.DIYf(log.LOG_DIY1, "vote", "id:%d send requestVote to id:%d", r.id, id)
 				}
 			}
 		case pb.MessageType_MsgBeat:
@@ -351,11 +375,13 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handleAppendEntries(m)
 		case pb.MessageType_MsgAppendResponse:
 		case pb.MessageType_MsgRequestVote:
+			// log.DIYf(log.LOG_DIY1, "vote", "id:%d get requestVote from %d", r.id, m.From)
 			r.handleRequestVote(m)
 		case pb.MessageType_MsgRequestVoteResponse:
 			r.handleRequestVoteResponse(m)
 		case pb.MessageType_MsgSnapshot:
 		case pb.MessageType_MsgHeartbeat:
+			// log.DIYf(log.LOG_DIY1, "heartbeat", "id:%d get heartbeat from %d", r.id, m.From)
 			r.handleHeartbeat(m)
 		case pb.MessageType_MsgHeartbeatResponse:
 		case pb.MessageType_MsgTransferLeader:
@@ -369,6 +395,7 @@ func (r *Raft) Step(m pb.Message) error {
 			for id := range r.Prs {
 				if id != r.id {
 					r.sendHeartbeat(id)
+					// log.DIYf(log.LOG_DIY1, "heartbeat", "id:%d send heartbeat to id:%d", r.id, id)
 				}
 			}
 		case pb.MessageType_MsgPropose:
@@ -409,9 +436,24 @@ func (r *Raft) maybeCommit() bool {
 	term, _ := r.RaftLog.Term(majorityIndex)
 	if majorityIndex > r.RaftLog.committed && term == r.Term {
 		r.RaftLog.committed = majorityIndex
+		// log.DIYf(log.LOG_DIY1, "commit", "leader: %d change commit to %d, match 情况: %v ", r.id, r.RaftLog.committed, r.Prs)
 		commitres = true
 	}
 	return commitres
+}
+
+func printMessages(msgs []pb.Message) {
+	for i, msg := range msgs {
+		log.DIYf(log.LOG_DIY1, "msgs", "Message %d:\n", i+1)
+		log.DIYf(log.LOG_DIY1, "msgs", "  MsgType: %v\n", msg.MsgType)
+		log.DIYf(log.LOG_DIY1, "msgs", "  To: %d\n", msg.To)
+		log.DIYf(log.LOG_DIY1, "msgs", "  From: %d\n", msg.From)
+		log.DIYf(log.LOG_DIY1, "msgs", "  Term: %d\n", msg.Term)
+		log.DIYf(log.LOG_DIY1, "msgs", "  LogTerm: %d\n", msg.LogTerm)
+		log.DIYf(log.LOG_DIY1, "msgs", "  Index: %d\n", msg.Index)
+		log.DIYf(log.LOG_DIY1, "msgs", "  Commit: %d\n", msg.Commit)
+		log.DIYf(log.LOG_DIY1, "msgs", "  Reject: %v\n", msg.Reject)
+	}
 }
 
 /*-------------------------------------工具 函数 END------------------------------------*/
@@ -437,6 +479,8 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 
 // becomeCandidate transform this peer's state to candidate
 func (r *Raft) becomeCandidate() {
+
+	//log.DIYf(log.LOG_DIY1, "vote", "id:%d become candidate at term:%d", r.id, r.Term)
 	// Your Code Here (2A).
 	r.Term++      //增加当前任期
 	r.Vote = r.id //投票给自己
@@ -450,6 +494,8 @@ func (r *Raft) becomeCandidate() {
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
+	// log.DIYf(log.LOG_DIY1, "vote", "id:%d become leader at term:%d", r.id, r.Term)
+
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
 	r.State = StateLeader
@@ -483,6 +529,7 @@ func (r *Raft) handleHeartbeatResponse(m pb.Message) {
 
 	//回复的commit小于当前节点的commit，说明当前节点的commit需要更新
 	if m.Commit < r.RaftLog.committed {
+		// log.DIYf(log.LOG_DIY1, "commit", "id:%d get heartbeatresponse from %d, commit is %d, leader commit is %d", r.id, m.From, m.Commit, r.RaftLog.committed)
 		r.sendAppend(m.From)
 		return
 	}
@@ -504,6 +551,7 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 		for i := range entries {
 			entryPtrs = append(entryPtrs, &entries[i])
 		}
+		//log.DIYf(log.LOG_DIY1, "raft entry", "RESPmsg , logterm : %d", prevLogTerm)
 		msg := pb.Message{
 			MsgType: pb.MessageType_MsgAppend,
 			To:      m.From,
@@ -517,7 +565,9 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 		r.msgs = append(r.msgs, msg)
 		return
 	}
-
+	// for i, entry := range r.RaftLog.entries {
+	// 	// log.DIYf(log.LOG_DIY1, "raft entry", "id:%d entry is %v(term:%d, index:%d)", i, entry.Data, entry.Term, entry.Index)
+	// }
 	// 更新跟随者的 Match 和 Next
 	r.Prs[m.From].Match = m.Index
 	r.Prs[m.From].Next = m.Index + 1
@@ -526,28 +576,27 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 		r.sendAppend(m.From)
 	}
 	// 检查是否可以提交
-	// 如果当前任期和日志的任期相同，则可以判断是否提交
-	currentLogTerm, _ := r.RaftLog.Term(m.Index)
-	if r.Term == currentLogTerm {
-		// 检查是否可以提交
-		//commit索引改变才发消息
-		if r.maybeCommit() {
-			//同步Commit索引
-			for id := range r.Prs {
-				if id != r.id {
-					//这里应该可以通过在sendAppend（）中添加判断，来优化代码
-					r.msgs = append(r.msgs, pb.Message{
-						MsgType: pb.MessageType_MsgAppend,
-						Term:    r.Term,
-						From:    r.id,
-						To:      id,
-						//不带LogTerm和Index的话会默认设置为0，应当设置为消息的
-						LogTerm: m.LogTerm,
-						Index:   m.Index,
-						Entries: nil,
-						Commit:  r.RaftLog.committed,
-					})
-				}
+	//commit索引改变才发消息
+	logterm, _ := r.RaftLog.Term(m.Index)
+	if r.maybeCommit() {
+		//同步Commit索引
+		for id := range r.Prs {
+			if id != r.id {
+				//这里应该可以通过在sendAppend（）中添加判断，来优化代码
+				// log.DIYf(log.LOG_DIY1, "raft entry", "commit msgs ,to %d,Index is %d, commit is %d", m.To, r.Prs[m.From].Next-1, r.RaftLog.committed)
+				r.msgs = append(r.msgs, pb.Message{
+					MsgType: pb.MessageType_MsgAppend,
+					Term:    r.Term,
+					From:    r.id,
+					To:      id,
+					//不带LogTerm和Index的话会默认设置为0，应当设置为消息的
+					//LogTerm: m.LogTerm,
+					LogTerm: logterm,
+					Index:   r.Prs[id].Match,
+					Entries: nil,
+					Commit:  r.RaftLog.committed,
+				})
+
 			}
 		}
 	}
@@ -560,19 +609,10 @@ func (r *Raft) handlePropose(m pb.Message) {
 		entry.Term = r.Term
 		r.RaftLog.appendEntry(*entry)
 	}
+	//log.DIYf(log.LOG_DIY1, "READY", "id:%d with state %v append entry %v", r.id, r.State, m.Entries)
 
 	r.Prs[r.id].Match = r.RaftLog.LastIndex()
 	r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
-	//这里是否需要对非leader节点的Next和Match进行更新？？
-	//以及为何更新非leader节点时，非leader的Next节点只能更新到当前leader节点的lastindex？？而不是像becomeleader（）时那样更新为leader节点的lastindex+1？？
-	// for id := range r.Prs {
-	// 	if id != r.id {
-	// 		r.Prs[id].Next = r.RaftLog.LastIndex()
-	// 	} else {
-	// 		r.Prs[id].Match = r.RaftLog.LastIndex()
-	// 		r.Prs[id].Next = r.RaftLog.LastIndex() + 1
-	// 	}
-	// }
 
 	// 如果是单节点集群，直接将 Match 值作为 committed
 	if len(r.Prs) == 1 {
@@ -601,6 +641,8 @@ func (r *Raft) handleRequestVoteResponse(m pb.Message) {
 		r.votes[m.From] = true
 	}
 
+	// log.DIYf(log.LOG_DIY1, "vote", "id:%d get voteresponse from %d, the Reject is %v", r.id, m.From, m.Reject)
+
 	voteCount := 0
 	voteNotCount := 0
 	for _, v := range r.votes {
@@ -611,6 +653,9 @@ func (r *Raft) handleRequestVoteResponse(m pb.Message) {
 			voteNotCount++
 		}
 	}
+
+	//log.DIYf(log.LOG_DIY1, "vote", "id:%d voteCount:%d, voteNotCount:%d", r.id, voteCount, voteNotCount)
+
 	if voteCount >= len(r.Prs)/2+1 { //大于半数节点投支持票
 		r.becomeLeader()
 		return
@@ -626,6 +671,8 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 
 	logterm, _ := r.RaftLog.Term(r.RaftLog.LastIndex())
 	ridx := r.RaftLog.LastIndex()
+
+	// log.DIYf(log.LOG_DIY1, "vote", "HANDLEREQUESTVOTE!!!\n id:%d (Term is %d) get requestVote from %d(Term is %d), the  ", r.id, r.Term, m.From, m.Term)
 
 	if m.Term > r.Term {
 		r.becomeFollower(m.Term, None) //如果更大任期的消息类型是 MsgRequestVote，领导者应为空。
@@ -722,25 +769,35 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		return
 	}
 
-	returnIndex := m.Index + 1
-	if m.Entries != nil && m.Entries[0].Term != nextLogTerm { //找到复制起点
-		//日志裁剪
-		r.RaftLog.entries = r.RaftLog.getEntries(uint64(r.RaftLog.dummyIndex), uint64(m.Index+1))
-		//维护stabled日志
-		r.RaftLog.stabled = min(r.RaftLog.stabled, m.Index)
-		//追加日志
-		for _, entry := range m.Entries {
-			r.RaftLog.appendEntry(*entry)
+	returnIndex := m.Index
+	if m.Entries != nil {
+		if m.Entries[0].Term != nextLogTerm { //找到复制起点
+			//日志裁剪
+			r.RaftLog.entries = r.RaftLog.getEntries(uint64(r.RaftLog.dummyIndex), uint64(m.Index+1))
+			//维护stabled日志
+			r.RaftLog.stabled = min(r.RaftLog.stabled, m.Index)
+			//追加日志
+			for _, entry := range m.Entries {
+				// log.DIYf(log.LOG_DIY1, "raft entry", "append entry id:%d entry is %v(term:%d, index:%d)", r.id, entry.Data, entry.Term, entry.Index)
+				r.RaftLog.appendEntry(*entry)
+			}
+			returnIndex = r.RaftLog.LastIndex()
+		} else {
+			returnIndex++
 		}
-		returnIndex = r.RaftLog.LastIndex()
 	}
 	// 更新 committed 索引
 	if m.Commit > r.RaftLog.committed {
-		if m.Entries != nil {
+		if m.Entries != nil && returnIndex > r.RaftLog.committed {
 			r.RaftLog.committed = min(m.Commit, returnIndex)
+			// log.DIYf(log.LOG_DIY1, "raft entry", "entry!=nil id:%d committed is %d", r.id, r.RaftLog.committed)
 		} else {
-			// 如果没有追加日志，直接更新 committed 索引
-			r.RaftLog.committed = min(m.Commit, m.Index)
+			if m.Index > r.RaftLog.committed {
+				// log.DIYf(log.LOG_DIY1, "raft entry", "id:%d committed is %d;;;; message is %v , m.index is : %d", r.id, r.RaftLog.committed, m, m.Index)
+				// 如果没有追加日志，直接更新 committed 索引
+				r.RaftLog.committed = min(m.Commit, m.Index)
+				//log.DIYf(log.LOG_DIY1, "raft entry", "id:%d committed is %d;;;; message is %v , m.index is : %d", r.id, r.RaftLog.committed, m, m.Index)
+			}
 		}
 	}
 
@@ -756,6 +813,8 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
+	// log.DIYf(log.LOG_DIY1, "commit", "id:%d get heartbeat from %d, commit is %d, leader commit is %d", r.id, m.From, r.RaftLog.committed, m.Commit)
+
 	// Your Code Here (2A).
 	r.heartbeatElapsed = 0
 
@@ -770,6 +829,8 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 		})
 		return
 	}
+
+	r.becomeFollower(m.Term, m.From) //收到心跳消息，变为follower
 
 	r.msgs = append(r.msgs, pb.Message{
 		MsgType: pb.MessageType_MsgHeartbeatResponse,

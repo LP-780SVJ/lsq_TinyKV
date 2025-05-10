@@ -9,10 +9,13 @@ import (
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/runner"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/snap"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
+	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"github.com/pingcap-incubator/tinykv/log"
+	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
+	"github.com/pingcap-incubator/tinykv/raft"
 	"github.com/pingcap-incubator/tinykv/scheduler/pkg/btree"
 	"github.com/pingcap/errors"
 )
@@ -45,8 +48,126 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	// Your Code Here (2B).
 	if d.RaftGroup.HasReady() {
 		ready := d.RaftGroup.Ready()
+
 		d.peerStorage.SaveReadyState(&ready)
+
+		if len(ready.CommittedEntries) > 0 {
+			d.applyEntry(&ready)
+		}
+
+		//发送消息到网络层
+		d.Send(d.ctx.trans, ready.Messages)
+
 		d.RaftGroup.Advance(ready)
+	}
+}
+
+func (d *peerMsgHandler) applyEntry(ready *raft.Ready) error {
+
+	for _, entry := range ready.CommittedEntries {
+		msg_response := raft_cmdpb.RaftCmdResponse{} //一个entry对应一个RaftCmdResponse
+		reqs := new(raft_cmdpb.RaftCmdRequest)
+		if err := reqs.Unmarshal(entry.Data); err != nil {
+			log.Errorf("%s failed to unmarshal raft cmd request %v", d.Tag, err)
+			continue
+		}
+		//将entries反序列化为request
+		//根据不同request类型进行处理
+		for _, req := range reqs.Requests {
+			response, _ := d.makeResponse(req)
+			msg_response.Responses = append(msg_response.Responses, response)
+			msg_response.Header = &raft_cmdpb.RaftResponseHeader{
+				CurrentTerm: d.Term(),
+			}
+		}
+		d.handleProposal(&msg_response, &entry)
+	}
+	return nil
+}
+
+func (d *peerMsgHandler) makeResponse(req *raft_cmdpb.Request) (*raft_cmdpb.Response, error) {
+	response := &raft_cmdpb.Response{
+		CmdType: req.CmdType,
+	}
+	switch req.CmdType {
+	case raft_cmdpb.CmdType_Get:
+		getResp := req.GetGet()
+		if getResp != nil {
+			// log.DIYf(log.LOG_DIY1, "resp", "%s handle get response %v", d.Tag, getResp)
+		}
+		val, err := engine_util.GetCF(d.ctx.engine.Kv, getResp.GetCf(), getResp.GetKey())
+		if err != nil {
+			log.Errorf("%s failed to get %v", d.Tag, err)
+			return nil, err
+		}
+		response.Get = &raft_cmdpb.GetResponse{
+			Value: val,
+		}
+	case raft_cmdpb.CmdType_Put:
+		putResp := req.GetPut()
+		if putResp != nil {
+			//log.DIYf(log.LOG_DIY1, "resp", "%s handle put response %v", d.Tag, putResp)
+		}
+		if err := engine_util.PutCF(d.ctx.engine.Kv, req.Put.Cf, req.Put.GetKey(), req.Put.GetValue()); err != nil {
+			log.Errorf("%s failed to put %v", d.Tag, err)
+			return nil, err
+		}
+		response.Put = &raft_cmdpb.PutResponse{}
+	case raft_cmdpb.CmdType_Delete:
+		deleteResp := req.GetDelete()
+		if deleteResp != nil {
+			// log.DIYf(log.LOG_DIY1, "resp", "%s handle delete response %v", d.Tag, deleteResp)
+		}
+		if err := engine_util.DeleteCF(d.ctx.engine.Kv, req.Delete.Cf, req.Delete.GetKey()); err != nil {
+			log.Errorf("%s failed to delete %v", d.Tag, err)
+			return nil, err
+		}
+		response.Delete = &raft_cmdpb.DeleteResponse{}
+	case raft_cmdpb.CmdType_Snap:
+		// log.DIYf(log.LOG_DIY1, "resp", "%s handle snap response ", d.Tag)
+		response.Snap = &raft_cmdpb.SnapResponse{
+			Region: d.Region(),
+		}
+	}
+	return response, nil
+}
+
+func (d *peerMsgHandler) handleProposal(msg_response *raft_cmdpb.RaftCmdResponse, entry *eraftpb.Entry) {
+	for len(d.proposals) > 0 {
+		//log.DIYf(log.LOG_DIY3, "PROPOSAL", "%s Leader %d apply committed entries %s, length of response is %d", d.Tag, d.PeerId(), reqs.String(), len(msg_response.Responses))
+		proposal := d.proposals[0]
+		if entry.Term < proposal.term {
+			break
+		}
+
+		if entry.Term > proposal.term {
+			proposal.cb.Done(ErrRespStaleCommand(proposal.term))
+			d.proposals = d.proposals[1:]
+			continue
+		}
+
+		if entry.Term == proposal.term && entry.Index < proposal.index {
+			break
+		}
+
+		if entry.Term == proposal.term && entry.Index > proposal.index {
+			proposal.cb.Done(ErrRespStaleCommand(proposal.term))
+			d.proposals = d.proposals[1:]
+			continue
+		}
+
+		if entry.Index == proposal.index && entry.Term == proposal.term {
+			if msg_response.Header == nil {
+				msg_response.Header = &raft_cmdpb.RaftResponseHeader{}
+			}
+			proposal.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
+			proposal.cb.Done(msg_response)
+			//log.DIYf(log.LOG_DIY3, "PROPOSAL", "%s Leader %d apply committed entries %s, length of response is %d", d.Tag, d.PeerId(), reqs.String(), len(msg_response.Responses))
+			d.proposals = d.proposals[1:]
+			//defer txn.Discard()//上层来Discard
+			break
+		}
+		panic("This should not happen.")
 	}
 }
 
@@ -120,27 +241,37 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
-	//判断是否是Admin请求
-	if msg.AdminRequest != nil {
-		switch msg.AdminRequest.CmdType {
-		case raft_cmdpb.AdminCmdType_CompactLog:
-		case raft_cmdpb.AdminCmdType_Split:
-		}
-	} else if len(msg.Requests) > 0 {
-		for _, req := range msg.Requests {
-			switch req.CmdType {
-			case raft_cmdpb.CmdType_Get:
-			case raft_cmdpb.CmdType_Put:
-			case raft_cmdpb.CmdType_Delete:
-			case raft_cmdpb.CmdType_Snap:
-			}
-		}
+	if msg == nil {
+		log.Errorf("%s propose raft command is nil", d.Tag)
+		return
 	}
+	if len(msg.Requests) > 0 {
+		data, err := msg.Marshal()
+		if err != nil {
+			log.Errorf("%s failed to marshal request %v", d.Tag, err)
+			cb.Done(ErrResp(err))
+			return
+		}
 
-	//调用回调函数，通知提交成功
-	// cb.Done(&raft_cmdpb.RaftCmdResponse{
-	// 	Header: &raft_cmdpb.RaftResponseHeader{},
-	// })
+		proposal := &proposal{
+			index: d.nextProposalIndex(),
+			term:  d.Term(),
+			cb:    cb,
+		}
+		d.proposals = append(d.proposals, proposal)
+		// log.DIYf(log.LOG_DIY3, "PROPOSAL", "%d proposal callback %v", d.PeerId(), proposal)
+
+		if err := d.RaftGroup.Propose(data); err != nil {
+			log.Errorf("%s failed to propose request %v", d.Tag, err)
+			cb.Done(ErrResp(err))
+			return
+		}
+		//将请求添加到 proposals 中
+		// 这里的 proposals 是一个切片，存储了所有待处理的请求
+		// 每个 proposal 都包含了请求的索引、任期和回调函数
+		// 通过 cb.Done() 方法来处理请求的结果
+		// 这样做的目的是为了在请求完成后能够通知调用者
+	}
 }
 
 func (d *peerMsgHandler) onTick() {

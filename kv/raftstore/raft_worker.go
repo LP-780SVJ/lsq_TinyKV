@@ -51,6 +51,7 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 			if peerState == nil {
 				continue
 			}
+			//log.DIYf(log.LOG_DIY3, "PEER", "peer %d handle message %v(%v)", peerState.peer.PeerId(), msg.Type, msg.Data)
 			newPeerMsgHandler(peerState.peer, rw.ctx).HandleMsg(msg)
 		}
 		for _, peerState := range peerStateMap {

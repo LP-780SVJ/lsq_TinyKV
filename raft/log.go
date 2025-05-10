@@ -14,7 +14,9 @@
 
 package raft
 
-import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+import (
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+)
 
 // RaftLog manage the log entries, its struct look like:
 //
@@ -130,6 +132,10 @@ func (l *RaftLog) getEntry(i uint64) pb.Entry {
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
 	diff := l.dummyIndex - 1
+	// if l.applied < diff {
+	// 	return
+	// }
+	// log.DIYf(log.LOG_DIY3, "PEER", "applied %d, committed %d , diff %d", l.applied, l.committed,diff)
 	return l.entries[l.applied-diff : l.committed-diff]
 }
 

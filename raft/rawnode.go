@@ -131,6 +131,9 @@ func (rn *RawNode) Campaign() error {
 
 // Propose proposes data be appended to the raft log.
 func (rn *RawNode) Propose(data []byte) error {
+	if len(data) == 0 {
+		// log.DIYf(log.LOG_DIY1, "PEER", "raft propose data is nil")
+	}
 	ent := pb.Entry{Data: data}
 	return rn.Raft.Step(pb.Message{
 		MsgType: pb.MessageType_MsgPropose,
@@ -213,6 +216,10 @@ func (rn *RawNode) Ready() Ready {
 		readySnapshot = *rn.Raft.RaftLog.pendingSnapshot
 	}
 	readyCommittedEntries := rn.Raft.RaftLog.nextEnts()
+	// for i, entry := range readyCommittedEntries {
+	// 	log.DIYf(log.LOG_DIY1, "raft entry", "raftid %d, state is %v, entry%d is %v(term:%d, index:%d), apply is %d, commit is %d",
+	// 		rn.Raft.id, rn.Raft.State, i, entry.Data, entry.Term, entry.Index, rn.Raft.RaftLog.applied, rn.Raft.RaftLog.committed)
+	// }
 	readyMessages := rn.Raft.msgs
 	return Ready{
 		SoftState:        readySoftstate,
@@ -246,7 +253,9 @@ func (rn *RawNode) Advance(rd Ready) {
 
 	// 更新已提交但未应用的日志条目
 	if len(rd.CommittedEntries) > 0 {
+		// log.DIYf(log.LOG_DIY1, "READY", "raftid:%d, raft state:%v, ready committedentries are: INDEX: %d ; TERM: %d ,length of committedentries is %d", rn.Raft.id, rn.Raft.State, rd.CommittedEntries[len(rd.CommittedEntries)-1].Index, rd.CommittedEntries[len(rd.CommittedEntries)-1].Term, len(rd.CommittedEntries))
 		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
+		// log.DIYf(log.LOG_DIY1, "PEER", "raft id:%d, raft state:%v, Advance raft advance applied %d", rn.Raft.id, rn.Raft.State, rn.Raft.RaftLog.applied)
 		rd.CommittedEntries = nil
 	}
 
