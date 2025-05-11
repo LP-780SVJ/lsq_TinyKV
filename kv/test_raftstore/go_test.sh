@@ -14,7 +14,7 @@ NC='\033[0m' # No Color
 # 测试名称
 # TEST_NAME="TestBasic2B"
 #通过
-TEST_NAME="TestConcurrent2B"
+# TEST_NAME="TestConcurrent2B"
 #通过
 # TEST_NAME="TestUnreliable2B"
 #通过
@@ -30,7 +30,7 @@ TEST_NAME="TestConcurrent2B"
 #通过
 # TEST_NAME="TestPersistConcurrentUnreliable2B"
 # TEST_NAME="TestPersistPartition2B"
-# TEST_NAME="TestPersistPartitionUnreliable2B"
+TEST_NAME="TestPersistPartitionUnreliable2B"
 
 
 TOTAL_RUNS=10 

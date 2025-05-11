@@ -51,12 +51,12 @@ func (d *peerMsgHandler) HandleRaftReady() {
 
 		d.peerStorage.SaveReadyState(&ready)
 
+		//发送消息到网络层
+		d.Send(d.ctx.trans, ready.Messages)
+
 		if len(ready.CommittedEntries) > 0 {
 			d.applyEntry(&ready)
 		}
-
-		//发送消息到网络层
-		d.Send(d.ctx.trans, ready.Messages)
 
 		d.RaftGroup.Advance(ready)
 	}

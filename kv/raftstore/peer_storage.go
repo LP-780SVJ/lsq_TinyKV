@@ -372,51 +372,8 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
 
-	// //创建批量写入工具类的实例
-	// kvWB := new(engine_util.WriteBatch)
-	// raftWB := new(engine_util.WriteBatch)
-
-	// //判断是否有Snapshot需要应用
-	// if !raft.IsEmptySnap(&ready.Snapshot) {
-
-	// 	// 调用 ApplySnapshot 方法
-	// 	_, err := ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-
-	// 	// 将 WriteBatch 写入到对应的数据库
-	// 	if err := kvWB.WriteToDB(ps.Engines.Kv); err != nil {
-	// 		return nil, err
-	// 	}
-	// 	if err := raftWB.WriteToDB(ps.Engines.Raft); err != nil {
-	// 		return nil, err
-	// 	}
-	// }
-
-	// //判断是否有日志需要追加
-	// if len(ready.Entries) > 0 {
-	// 	// 调用 Append 方法
-	// 	if err := ps.Append(ready.Entries, raftWB); err != nil {
-	// 		return nil, err
-	// 	}
-	// 	// 将 WriteBatch 写入到对应的数据库
-	// 	if err := raftWB.WriteToDB(ps.Engines.Raft); err != nil {
-	// 		return nil, err
-	// 	}
-	// }
-
-	// if !raft.IsEmptyHardState(ready.HardState) {
-	// 	ps.raftState.HardState = &ready.HardState
-	// 	//将硬状态写入到RaftDB
-	// 	if err := raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState); err != nil {
-	// 		return nil, err
-	// 	}
-	// }
-
-	// return nil, nil
 	raftWB := new(engine_util.WriteBatch)
-	// var kvWB *engine_util.WriteBatch
+	kvWB := new(engine_util.WriteBatch)
 	var result *ApplySnapResult
 
 	if len(ready.Entries) > 0 {
@@ -424,24 +381,21 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 			return nil, err
 		}
 	}
-	//写入KVDB
-	if err := ps.Engines.WriteKV(raftWB); err != nil {
-		return nil, err
-	}
+
+	// log.DIYf(log.LOG_DIY1, "RAFTWB", "After append :%d", raftWB.Len())
 
 	//保存硬状态
 	if !raft.IsEmptyHardState(ready.HardState) {
 		ps.raftState.HardState = &ready.HardState
 	}
 
-	// if len(ready.CommittedEntries) > 0 {
-	// 	ps.applyState.AppliedIndex = ready.CommittedEntries[len(ready.CommittedEntries)-1].Index
-	// }
-
 	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
-	// kvWB.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState)
+	kvWB.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState)
+
+	// log.DIYf(log.LOG_DIY1, "RAFTWB", "After SetMeta :%d", raftWB.Len())
+
 	ps.Engines.WriteRaft(raftWB)
-	// ps.Engines.WriteKV(kvWB)
+	ps.Engines.WriteKV(kvWB)
 	return result, nil
 }
 
