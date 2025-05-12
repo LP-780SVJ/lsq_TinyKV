@@ -91,7 +91,6 @@ func (r *RaftstoreRouter) SendRaftMessage(msg *raft_serverpb.RaftMessage) error 
 		r.router.sendStore(message.NewPeerMsg(message.MsgTypeStoreRaftMessage, regionID, msg))
 	}
 	return nil
-
 }
 
 func (r *RaftstoreRouter) SendRaftCommand(req *raft_cmdpb.RaftCmdRequest, cb *message.Callback) error {

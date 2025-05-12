@@ -29,8 +29,17 @@ NC='\033[0m' # No Color
 # TEST_NAME="TestPersistConcurrent2B"
 #通过
 # TEST_NAME="TestPersistConcurrentUnreliable2B"
+# 通过
 # TEST_NAME="TestPersistPartition2B"
-TEST_NAME="TestPersistPartitionUnreliable2B"
+# 通过
+# TEST_NAME="TestPersistPartitionUnreliable2B"
+# 通过
+# TEST_NAME="TestOneSnapshot2C"
+# TEST_NAME="TestSnapshotRecover2C"
+# TEST_NAME="TestSnapshotRecoverManyClients2C"
+# TEST_NAME="TestSnapshotUnreliable2C"
+# TEST_NAME="TestSnapshotUnreliableRecover2C"
+TEST_NAME="TestSnapshotUnreliableRecoverConcurrentPartition2C"
 
 
 TOTAL_RUNS=10 

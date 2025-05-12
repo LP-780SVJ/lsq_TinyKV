@@ -279,6 +279,9 @@ func (rn *RawNode) Advance(rd Ready) {
 	if rd.SoftState != nil {
 		rn.presoftstate = rd.SoftState
 	}
+
+	rn.Raft.RaftLog.pendingSnapshot = nil
+	rn.Raft.RaftLog.maybeCompact()
 }
 
 // GetProgress return the Progress of this node and its peers, if this

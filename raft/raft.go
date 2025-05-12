@@ -914,7 +914,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	r.RaftLog.stabled = m.Snapshot.Metadata.Index
 	r.RaftLog.committed = m.Snapshot.Metadata.Index
 	r.RaftLog.applied = m.Snapshot.Metadata.Index - 1
-	//日志应该如何处理？？？
+	//日志处理
 	if m.Snapshot.Metadata.Index > r.RaftLog.LastIndex() {
 		r.RaftLog.entries = nil
 		r.RaftLog.dummyIndex = m.Snapshot.Metadata.Index
