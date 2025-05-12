@@ -145,6 +145,11 @@ func (l *RaftLog) LastIndex() uint64 {
 	return l.dummyIndex - 1 + uint64(len(l.entries))
 }
 
+func (l *RaftLog) FirstIndex() uint64 {
+	// Your Code Here (2A).
+	return l.dummyIndex
+}
+
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).

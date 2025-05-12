@@ -219,6 +219,29 @@ func newRaft(c *Config) *Raft {
 // 向指定节点发送日志复制消息
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
+	if r.Prs[to].Next < r.RaftLog.FirstIndex() {
+		var snapshot pb.Snapshot
+		var err error
+		if r.RaftLog.pendingSnapshot != nil {
+			// 如果leader的pendingSnapshot不为空，说明有快照需要发送
+			snapshot = *r.RaftLog.pendingSnapshot
+		} else {
+			//否则生成新的快照
+			snapshot, err = r.RaftLog.storage.Snapshot()
+			if err != nil { //快照未生成完成
+				return false
+			}
+		}
+		msg := pb.Message{
+			MsgType:  pb.MessageType_MsgSnapshot,
+			To:       to,
+			From:     r.id,
+			Term:     r.Term,
+			Snapshot: &snapshot,
+		}
+		r.msgs = append(r.msgs, msg)
+		return true
+	}
 	prevLogIndex := r.Prs[to].Next - 1
 	prevLogTerm, _ := r.RaftLog.Term(prevLogIndex)
 	entries := r.RaftLog.getEntries(r.Prs[to].Next, r.Prs[r.id].Next)
@@ -344,6 +367,7 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handleRequestVote(m)
 		case pb.MessageType_MsgRequestVoteResponse:
 		case pb.MessageType_MsgSnapshot:
+			r.handleSnapshot(m)
 		case pb.MessageType_MsgHeartbeat:
 			// log.DIYf(log.LOG_DIY1, "heartbeat", "id:%d get heartbeat from %d", r.id, m.From)
 			r.handleHeartbeat(m)
@@ -380,6 +404,7 @@ func (r *Raft) Step(m pb.Message) error {
 		case pb.MessageType_MsgRequestVoteResponse:
 			r.handleRequestVoteResponse(m)
 		case pb.MessageType_MsgSnapshot:
+			r.handleSnapshot(m)
 		case pb.MessageType_MsgHeartbeat:
 			// log.DIYf(log.LOG_DIY1, "heartbeat", "id:%d get heartbeat from %d", r.id, m.From)
 			r.handleHeartbeat(m)
@@ -543,6 +568,29 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 
 	if m.Reject {
 		// 如果跟随者拒绝，回退索引
+		if r.Prs[m.From].Next < r.RaftLog.FirstIndex() {
+			var snapshot pb.Snapshot
+			var err error
+			if r.RaftLog.pendingSnapshot != nil {
+				// 如果leader的pendingSnapshot不为空，说明有快照需要发送
+				snapshot = *r.RaftLog.pendingSnapshot
+			} else {
+				//否则生成新的快照
+				snapshot, err = r.RaftLog.storage.Snapshot()
+				if err != nil { //快照未生成完成
+					return
+				}
+			}
+			msg := pb.Message{
+				MsgType:  pb.MessageType_MsgSnapshot,
+				To:       m.From,
+				From:     r.id,
+				Term:     r.Term,
+				Snapshot: &snapshot,
+			}
+			r.msgs = append(r.msgs, msg)
+			return
+		}
 		prevLogIndex := m.Index
 		prevLogTerm, _ := r.RaftLog.Term(prevLogIndex)
 		entries := r.RaftLog.getEntries(m.Index+1, r.Prs[r.id].Next)
@@ -844,7 +892,52 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
+	if m.Term < r.Term || m.Snapshot == nil || m.Index < r.RaftLog.committed {
+		r.msgs = append(r.msgs, pb.Message{
+			MsgType: pb.MessageType_MsgAppendResponse,
+			Term:    r.Term,
+			From:    r.id,
+			To:      m.From,
+			Reject:  true,
+			Index:   r.RaftLog.committed,
+		})
+		return
+	}
 	// Your Code Here (2C).
+	r.becomeFollower(m.Term, m.From) //收到快照消息，变为follower
+	//更新成员信息
+	r.Prs = make(map[uint64]*Progress)
+	for _, id := range m.Snapshot.Metadata.ConfState.Nodes { //Nodes是一个uint64的切片
+		r.Prs[id] = &Progress{}
+	}
+	//更新索引信息
+	r.RaftLog.stabled = m.Snapshot.Metadata.Index
+	r.RaftLog.committed = m.Snapshot.Metadata.Index
+	r.RaftLog.applied = m.Snapshot.Metadata.Index - 1
+	//日志应该如何处理？？？
+	if m.Snapshot.Metadata.Index > r.RaftLog.LastIndex() {
+		r.RaftLog.entries = nil
+		r.RaftLog.dummyIndex = m.Snapshot.Metadata.Index
+	} else if m.Snapshot.Metadata.Index > r.RaftLog.dummyIndex {
+		r.RaftLog.entries = r.RaftLog.getEntries(uint64(m.Snapshot.Metadata.Index), uint64(r.RaftLog.LastIndex()+1))
+		r.RaftLog.dummyIndex = m.Snapshot.Metadata.Index
+	}
+	if r.RaftLog.entries == nil { //面向测试
+		r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{
+			Term:  m.Snapshot.Metadata.Term,
+			Index: m.Snapshot.Metadata.Index,
+			Data:  nil,
+		})
+	}
+	r.RaftLog.pendingSnapshot = m.Snapshot
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType: pb.MessageType_MsgAppendResponse,
+		Term:    r.Term,
+		From:    r.id,
+		To:      m.From,
+		Reject:  false,
+		Index:   r.RaftLog.committed,
+	})
 }
 
 /*-------------------------------------HANDLE 函数 END------------------------------------*/

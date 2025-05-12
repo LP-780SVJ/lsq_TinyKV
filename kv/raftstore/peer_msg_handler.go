@@ -73,11 +73,20 @@ func (d *peerMsgHandler) applyEntry(ready *raft.Ready) error {
 		}
 		//将entries反序列化为request
 		//根据不同request类型进行处理
-		for _, req := range reqs.Requests {
-			response, _ := d.makeResponse(req)
-			msg_response.Responses = append(msg_response.Responses, response)
-			msg_response.Header = &raft_cmdpb.RaftResponseHeader{
-				CurrentTerm: d.Term(),
+		if reqs.AdminRequest != nil {
+			switch reqs.AdminRequest.CmdType {
+			case raft_cmdpb.AdminCmdType_CompactLog:
+				d.peerStorage.applyState.TruncatedState.Index = reqs.AdminRequest.CompactLog.CompactIndex
+				d.peerStorage.applyState.TruncatedState.Term = reqs.AdminRequest.CompactLog.CompactTerm
+				d.ScheduleCompactLog(d.peerStorage.applyState.TruncatedState.Index)
+			}
+		} else {
+			for _, req := range reqs.Requests {
+				response, _ := d.makeResponse(req)
+				msg_response.Responses = append(msg_response.Responses, response)
+				msg_response.Header = &raft_cmdpb.RaftResponseHeader{
+					CurrentTerm: d.Term(),
+				}
 			}
 		}
 		d.handleProposal(&msg_response, &entry)
@@ -244,6 +253,30 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	if msg == nil {
 		log.Errorf("%s propose raft command is nil", d.Tag)
 		return
+	}
+	if msg.AdminRequest != nil {
+		if msg.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_CompactLog {
+			data, err := msg.Marshal()
+			if err != nil {
+				log.Errorf("%s failed to marshal request %v", d.Tag, err)
+				cb.Done(ErrResp(err))
+				return
+			}
+
+			proposal := &proposal{
+				index: d.nextProposalIndex(),
+				term:  d.Term(),
+				cb:    cb,
+			}
+			d.proposals = append(d.proposals, proposal)
+			// log.DIYf(log.LOG_DIY3, "PROPOSAL", "%d proposal callback %v", d.PeerId(), proposal)
+
+			if err := d.RaftGroup.Propose(data); err != nil {
+				log.Errorf("%s failed to propose request %v", d.Tag, err)
+				cb.Done(ErrResp(err))
+				return
+			}
+		}
 	}
 	if len(msg.Requests) > 0 {
 		data, err := msg.Marshal()
@@ -562,7 +595,7 @@ func (d *peerMsgHandler) findSiblingRegion() (result *metapb.Region) {
 }
 
 func (d *peerMsgHandler) onRaftGCLogTick() {
-	d.ticker.schedule(PeerTickRaftLogGC)
+	d.ticker.schedule(PeerTickRaftLogGC) //重新调度定时任务，以确保该任务会在下一个周期继续执行
 	if !d.IsLeader() {
 		return
 	}
@@ -675,6 +708,11 @@ func (d *peerMsgHandler) onSchedulerHeartbeatTick() {
 	d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
 }
 
+/*
+删除已经被压缩的快照。
+删除过期的快照（超过 4 小时）。
+删除已经应用的快照。
+*/
 func (d *peerMsgHandler) onGCSnap(snaps []snap.SnapKeyWithSending) {
 	compactedIdx := d.peerStorage.truncatedIndex()
 	compactedTerm := d.peerStorage.truncatedTerm()

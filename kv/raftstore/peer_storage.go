@@ -363,7 +363,28 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	// and send RegionTaskApply task to region worker through ps.regionSched, also remember call ps.clearMeta
 	// and ps.clearExtraData to delete stale data
 	// Your Code Here (2C).
-	return nil, nil
+	var result *ApplySnapResult
+	//清空旧数据
+	ps.clearMeta(kvWB, raftWB)
+	ps.clearExtraData(snapData.Region)
+
+	//更新raft状态
+	ps.raftState.LastIndex = snapshot.Metadata.Index
+	ps.raftState.LastTerm = snapshot.Metadata.Term
+	ps.applyState.AppliedIndex = snapshot.Metadata.Index
+	ps.applyState.TruncatedState.Index = snapshot.Metadata.Index
+	ps.applyState.TruncatedState.Term = snapshot.Metadata.Term
+	ps.snapState.StateType = snap.SnapState_Applying
+
+	//将Snapshot数据写入KV存储
+	ps.regionSched <- &runner.RegionTaskApply{
+		RegionId: ps.region.Id,
+		SnapMeta: snapshot.Metadata,
+		StartKey: ps.region.StartKey,
+		EndKey:   ps.region.EndKey,
+	}
+
+	return result, nil
 }
 
 // Save memory states to disk.
@@ -372,14 +393,19 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
 
-	raftWB := new(engine_util.WriteBatch)
-	kvWB := new(engine_util.WriteBatch)
+	// raftWB := new(engine_util.WriteBatch)
+	// kvWB := new(engine_util.WriteBatch)
+	raftWB := &engine_util.WriteBatch{}
+	kvWB := &engine_util.WriteBatch{}
 	var result *ApplySnapResult
 
 	if len(ready.Entries) > 0 {
 		if err := ps.Append(ready.Entries, raftWB); err != nil {
 			return nil, err
 		}
+	}
+	if !raft.IsEmptySnap(&ready.Snapshot) {
+		result, _ = ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
 	}
 
 	// log.DIYf(log.LOG_DIY1, "RAFTWB", "After append :%d", raftWB.Len())
